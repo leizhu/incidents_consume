@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/Shopify/sarama"
+	json "github.com/bitly/go-simplejson"
 	"github.com/bsm/sarama-cluster"
 	elastic "gopkg.in/olivere/elastic.v5"
 	"log"
@@ -64,6 +65,15 @@ type doc struct {
 	Timestamp time.Time `json:"@timestamp"`
 }
 
+func parseMsgContent(content []byte) (interface{}, string) {
+	js, _ := json.NewJson(content)
+	tenant := js.Get("tenant").MustString()
+	t := time.Now()
+	js.Set("incidentTime", t.Unix()*1000)
+	js.Set("localeIncidentTime", t.Format("2006-01-02 15:04:05"))
+	return js.Interface(), tenant
+}
+
 func (e *ElasticsearchOutput) flush() int {
 	count := len(e.messages)
 	if count == 0 {
@@ -80,11 +90,13 @@ func (e *ElasticsearchOutput) flush() int {
 	for _, msg := range tmpCopy {
 		logger.Println(fmt.Sprintf("[worker-%d] %s/%d/%d\t%s", e.workerNo, msg.Topic, msg.Partition, msg.Offset, msg.Value))
 		offsetStash.MarkOffset(msg, "")
-		d := doc{
-			Content:   fmt.Sprintf("%s", msg.Value),
-			Timestamp: time.Now(),
-		}
-		req := elastic.NewBulkIndexRequest().Doc(d)
+		//d := doc{
+		//	Content:   fmt.Sprintf("%s", msg.Value),
+		//	Timestamp: time.Now(),
+		//}
+		//req := elastic.NewBulkIndexRequest().Doc(d)
+		d, tenant := parseMsgContent(msg.Value)
+		req := elastic.NewBulkIndexRequest().Index("incidents-" + tenant).Doc(d)
 		bulk.Add(req)
 	}
 	res, err := bulk.Do(e.esCtx)
