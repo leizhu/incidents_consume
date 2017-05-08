@@ -65,13 +65,13 @@ type doc struct {
 	Timestamp time.Time `json:"@timestamp"`
 }
 
-func parseMsgContent(content []byte) (interface{}, string) {
+func parseMsgContent(content []byte) (interface{}, string, string) {
 	js, _ := json.NewJson(content)
 	tenant := js.Get("tenant").MustString()
 	t := time.Now()
 	js.Set("incidentTime", t.Unix()*1000)
 	js.Set("localeIncidentTime", t.Format("2006-01-02 15:04:05"))
-	return js.Interface(), tenant
+	return js.Interface(), tenant, "network"
 }
 
 func (e *ElasticsearchOutput) flush() int {
@@ -86,21 +86,22 @@ func (e *ElasticsearchOutput) flush() int {
 	e.messages = e.messages[:0]
 	// send batched events to es
 	offsetStash := cluster.NewOffsetStash()
-	bulk := e.esClient.Bulk().Index("test").Type("test")
+	//bulk := e.esClient.Bulk().Index("test").Type("test")
+	bulk := e.esClient.Bulk()
 	for _, msg := range tmpCopy {
-		logger.Println(fmt.Sprintf("[worker-%d] %s/%d/%d\t%s", e.workerNo, msg.Topic, msg.Partition, msg.Offset, msg.Value))
+		//logger.Println(fmt.Sprintf("[worker-%d] %s/%d/%d\t%s", e.workerNo, msg.Topic, msg.Partition, msg.Offset, msg.Value))
 		offsetStash.MarkOffset(msg, "")
 		//d := doc{
 		//	Content:   fmt.Sprintf("%s", msg.Value),
 		//	Timestamp: time.Now(),
 		//}
 		//req := elastic.NewBulkIndexRequest().Doc(d)
-		d, tenant := parseMsgContent(msg.Value)
-		req := elastic.NewBulkIndexRequest().Index("incidents-" + tenant).Doc(d)
-		bulk.Add(req)
+		d, tenant, docType := parseMsgContent(msg.Value)
+		bulk.Add(elastic.NewBulkIndexRequest().Index("incidents-" + tenant).Type(docType).Doc(d))
 	}
 	res, err := bulk.Do(e.esCtx)
 	if err == nil && !res.Errors {
+		logger.Println("bulk commit success")
 		e.KafkaConsumer.MarkOffsets(offsetStash)
 		//err := e.KafkaConsumer.CommitOffsets()
 		//if err != nil {
@@ -151,7 +152,7 @@ func (e *ElasticsearchOutput) run() {
 				}
 			}
 		case <-timer.C:
-			logger.Println(fmt.Sprintf("[worker-%d] Flushing buffered incidents because of timeout. Events flushed: %v", e.workerNo, len(e.messages)))
+			//logger.Println(fmt.Sprintf("[worker-%d] Flushing buffered incidents because of timeout. Events flushed: %v", e.workerNo, len(e.messages)))
 			e.flush()
 			timer.Reset(time.Duration(e.flushIntervalSeconds) * time.Second)
 		}
