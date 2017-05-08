@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/Shopify/sarama"
 	"github.com/bsm/sarama-cluster"
+	elastic "gopkg.in/olivere/elastic.v5"
 	"log"
 	"os"
 	"sync"
@@ -25,9 +27,21 @@ type ElasticsearchOutput struct {
 	flushSize            int
 	flushIntervalSeconds int
 	wg                   sync.WaitGroup
+	esClient             *elastic.Client
+	esCtx                context.Context
 }
 
-func NewElasticsearchOutput(size int, intervalSeconds int, consumer *cluster.Consumer, no int) *ElasticsearchOutput {
+func NewElasticsearchOutput(size int, intervalSeconds int, consumer *cluster.Consumer, no int, url string, sniff bool) *ElasticsearchOutput {
+	client, err := elastic.NewClient(elastic.SetURL(url), elastic.SetSniff(sniff))
+	if err != nil {
+		return nil
+	}
+	ctx := context.Background()
+	info, code, err := client.Ping(url).Do(ctx)
+	if err != nil {
+		logger.Println(fmt.Sprintf("Elasticsearch returned with code %d and version %s", code, info.Version.Number))
+		return nil
+	}
 	return &ElasticsearchOutput{
 		Channel:              make(chan *sarama.ConsumerMessage, channelSize),
 		messages:             make([]*sarama.ConsumerMessage, 0, size),
@@ -35,12 +49,19 @@ func NewElasticsearchOutput(size int, intervalSeconds int, consumer *cluster.Con
 		flushSize:            size,
 		flushIntervalSeconds: intervalSeconds,
 		workerNo:             no,
+		esClient:             client,
+		esCtx:                ctx,
 	}
 }
 
 func (e *ElasticsearchOutput) Start() {
 	e.wg.Add(1)
 	go e.run()
+}
+
+type doc struct {
+	Content   string    `json:"content"`
+	Timestamp time.Time `json:"@timestamp"`
 }
 
 func (e *ElasticsearchOutput) flush() int {
@@ -53,15 +74,28 @@ func (e *ElasticsearchOutput) flush() int {
 	copy(tmpCopy, e.messages)
 	// clear buffer
 	e.messages = e.messages[:0]
-
 	// send batched events to es
+	offsetStash := cluster.NewOffsetStash()
+	bulk := e.esClient.Bulk().Index("test").Type("test")
 	for _, msg := range tmpCopy {
 		logger.Println(fmt.Sprintf("[worker-%d] %s/%d/%d\t%s", e.workerNo, msg.Topic, msg.Partition, msg.Offset, msg.Value))
-		e.KafkaConsumer.MarkOffset(msg, "")
-		err := e.KafkaConsumer.CommitOffsets()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: "+err.Error())
+		offsetStash.MarkOffset(msg, "")
+		d := doc{
+			Content:   fmt.Sprintf("%s", msg.Value),
+			Timestamp: time.Now(),
 		}
+		req := elastic.NewBulkIndexRequest().Doc(d)
+		bulk.Add(req)
+	}
+	res, err := bulk.Do(e.esCtx)
+	if err == nil && !res.Errors {
+		e.KafkaConsumer.MarkOffsets(offsetStash)
+		//err := e.KafkaConsumer.CommitOffsets()
+		//if err != nil {
+		//      fmt.Fprintf(os.Stderr, "ERROR: "+err.Error())
+		//}
+	} else {
+		logger.Println("bulk commit failed")
 	}
 
 	return count

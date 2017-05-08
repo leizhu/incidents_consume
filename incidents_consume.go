@@ -23,6 +23,8 @@ var (
 	workers              = flag.Int("workers", 1, "How many consumers will be started")
 	flushSize            = flag.Int("flushSize", 100, "Flush size of es output")
 	flushIntervalSeconds = flag.Int("flushIntervalSeconds", 10, "Flush Interval Seconds of es output")
+	esURL                = flag.String("esURL", "http://elasticsearch:9200", "Elasticsearch URL")
+	sniff                = flag.Bool("sniff", true, "Whether to enable sniff in elasticsearch")
 
 	logger = log.New(os.Stderr, "", log.LstdFlags)
 )
@@ -39,11 +41,15 @@ func NewWorker(num int, w *sync.WaitGroup, brokerList *string, groupID *string, 
 	consumer, err := cluster.NewConsumer(strings.Split(*brokerList, ","), *groupID, strings.Split(*topicList, ","), config)
 	if err != nil {
 		logger.Fatalln(fmt.Sprintf("Failed to start consumer-%d, %s", num, err.Error()))
-		w.Done()
 		return nil
 	}
+	output := NewElasticsearchOutput(*flushSize, *flushIntervalSeconds, consumer, num, *esURL, *sniff)
+	if output == nil {
+		logger.Fatalln(fmt.Sprintf("Failed to create es output of consumer-%d", num))
+		return nil
+	}
+	worker.esOutput = output
 	worker.KafkaConsumer = consumer
-	worker.esOutput = NewElasticsearchOutput(*flushSize, *flushIntervalSeconds, consumer, num)
 	return worker
 }
 
@@ -68,12 +74,6 @@ func (worker *Worker) run() {
 		case msg, more := <-worker.KafkaConsumer.Messages():
 			if more {
 				worker.esOutput.Channel <- msg
-				//logger.Println(fmt.Sprintf("[consumer-%d] %s/%d/%d\t%s", worker.No, msg.Topic, msg.Partition, msg.Offset, msg.Value))
-				//worker.KafkaConsumer.MarkOffset(msg, "")
-				//err := worker.KafkaConsumer.CommitOffsets()
-				//if err != nil {
-				//	fmt.Fprintf(os.Stderr, "ERROR: "+err.Error())
-				//}
 			}
 		case ntf, more := <-worker.KafkaConsumer.Notifications():
 			if more {
@@ -123,6 +123,8 @@ func main() {
 			worker := NewWorker(no, &wg, brokerList, groupID, topicList, config)
 			if worker != nil {
 				worker.run()
+			} else {
+				wg.Done()
 			}
 		}(i)
 	}
