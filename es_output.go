@@ -4,11 +4,10 @@ import (
 	"context"
 	"fmt"
 	"github.com/Shopify/sarama"
+	"github.com/Sirupsen/logrus"
 	json "github.com/bitly/go-simplejson"
 	"github.com/bsm/sarama-cluster"
 	elastic "gopkg.in/olivere/elastic.v5"
-	"log"
-	"os"
 	"sync"
 	"time"
 )
@@ -17,7 +16,6 @@ import (
 const channelSize = 1
 
 func init() {
-	logger = log.New(os.Stdout, "", log.LstdFlags)
 }
 
 type ElasticsearchOutput struct {
@@ -40,7 +38,7 @@ func NewElasticsearchOutput(size int, intervalSeconds int, consumer *cluster.Con
 	ctx := context.Background()
 	info, code, err := client.Ping(url).Do(ctx)
 	if err != nil {
-		logger.Println(fmt.Sprintf("Elasticsearch returned with code %d and version %s", code, info.Version.Number))
+		logrus.Info(fmt.Sprintf("Elasticsearch returned with code %d and version %s", code, info.Version.Number))
 		return nil
 	}
 	return &ElasticsearchOutput{
@@ -89,7 +87,7 @@ func (e *ElasticsearchOutput) flush() int {
 	//bulk := e.esClient.Bulk().Index("test").Type("test")
 	bulk := e.esClient.Bulk()
 	for _, msg := range tmpCopy {
-		//logger.Println(fmt.Sprintf("[worker-%d] %s/%d/%d\t%s", e.workerNo, msg.Topic, msg.Partition, msg.Offset, msg.Value))
+		logrus.Debug(fmt.Sprintf("[worker-%d] %s/%d/%d\t%s", e.workerNo, msg.Topic, msg.Partition, msg.Offset, msg.Value))
 		offsetStash.MarkOffset(msg, "")
 		//d := doc{
 		//	Content:   fmt.Sprintf("%s", msg.Value),
@@ -101,14 +99,14 @@ func (e *ElasticsearchOutput) flush() int {
 	}
 	res, err := bulk.Do(e.esCtx)
 	if err == nil && !res.Errors {
-		logger.Println("bulk commit success")
+		logrus.Info("bulk commit success")
 		e.KafkaConsumer.MarkOffsets(offsetStash)
 		//err := e.KafkaConsumer.CommitOffsets()
 		//if err != nil {
 		//      fmt.Fprintf(os.Stderr, "ERROR: "+err.Error())
 		//}
 	} else {
-		logger.Println("bulk commit failed")
+		logrus.Error("bulk commit failed")
 	}
 
 	return count
@@ -118,7 +116,7 @@ func (e *ElasticsearchOutput) queue(event *sarama.ConsumerMessage) bool {
 	flushed := false
 	e.messages = append(e.messages, event)
 	if len(e.messages) == cap(e.messages) {
-		logger.Println(fmt.Sprintf("[worker-%d] Flushing because queue is full. Events flushed: %d", e.workerNo, len(e.messages)))
+		logrus.Info(fmt.Sprintf("[worker-%d] Flushing because queue is full. Events flushed: %d", e.workerNo, len(e.messages)))
 		e.flush()
 		flushed = true
 	}
@@ -126,7 +124,7 @@ func (e *ElasticsearchOutput) queue(event *sarama.ConsumerMessage) bool {
 }
 
 func (e *ElasticsearchOutput) run() {
-	logger.Println(fmt.Sprintf("[worker-%d] Starting ElasticsearchOutput: FlushSize: %d; FlushIntervalSeconds: %d", e.workerNo, e.flushSize, e.flushIntervalSeconds))
+	logrus.Info(fmt.Sprintf("[worker-%d] Starting ElasticsearchOutput: FlushSize: %d; FlushIntervalSeconds: %d", e.workerNo, e.flushSize, e.flushIntervalSeconds))
 
 	defer e.flush()
 	defer e.wg.Done()
@@ -152,7 +150,7 @@ func (e *ElasticsearchOutput) run() {
 				}
 			}
 		case <-timer.C:
-			//logger.Println(fmt.Sprintf("[worker-%d] Flushing buffered incidents because of timeout. Events flushed: %v", e.workerNo, len(e.messages)))
+			logrus.Debug(fmt.Sprintf("[worker-%d] Flushing buffered incidents because of timeout. Events flushed: %v", e.workerNo, len(e.messages)))
 			e.flush()
 			timer.Reset(time.Duration(e.flushIntervalSeconds) * time.Second)
 		}
@@ -160,7 +158,7 @@ func (e *ElasticsearchOutput) run() {
 }
 
 func (e *ElasticsearchOutput) Stop() {
-	logger.Println(fmt.Sprintf("[worker-%d] Stopping ElasticsearchOutput...", e.workerNo))
+	logrus.Info(fmt.Sprintf("[worker-%d] Stopping ElasticsearchOutput...", e.workerNo))
 
 	// Signal to the run method that it should stop.
 	// Stop accepting writes. Any events in the channel will be flushed.
@@ -168,5 +166,5 @@ func (e *ElasticsearchOutput) Stop() {
 
 	// Wait for spooler shutdown to complete.
 	e.wg.Wait()
-	logger.Println(fmt.Sprintf("[worker-%d] ElasticsearchOutput has stopped", e.workerNo))
+	logrus.Info(fmt.Sprintf("[worker-%d] ElasticsearchOutput has stopped", e.workerNo))
 }

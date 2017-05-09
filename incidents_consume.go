@@ -11,7 +11,9 @@ import (
 	"syscall"
 
 	"github.com/Shopify/sarama"
+	"github.com/Sirupsen/logrus"
 	"github.com/bsm/sarama-cluster"
+	"github.com/leizhu/incidents_consume/logutil"
 )
 
 var (
@@ -25,6 +27,7 @@ var (
 	flushIntervalSeconds = flag.Int("flushIntervalSeconds", 10, "Flush Interval Seconds of es output")
 	esURL                = flag.String("esURL", "http://elasticsearch:9200", "Elasticsearch URL")
 	sniff                = flag.Bool("sniff", true, "Whether to enable sniff in elasticsearch")
+	loglevel             = flag.String("loglevel", "info", "Log level")
 
 	logger = log.New(os.Stderr, "", log.LstdFlags)
 )
@@ -40,12 +43,12 @@ func NewWorker(num int, w *sync.WaitGroup, brokerList *string, groupID *string, 
 	worker := &Worker{No: num, wg: w}
 	consumer, err := cluster.NewConsumer(strings.Split(*brokerList, ","), *groupID, strings.Split(*topicList, ","), config)
 	if err != nil {
-		logger.Fatalln(fmt.Sprintf("Failed to start consumer-%d, %s", num, err.Error()))
+		logrus.Fatal(fmt.Sprintf("Failed to start consumer-%d, %s", num, err.Error()))
 		return nil
 	}
 	output := NewElasticsearchOutput(*flushSize, *flushIntervalSeconds, consumer, num, *esURL, *sniff)
 	if output == nil {
-		logger.Fatalln(fmt.Sprintf("Failed to create es output of consumer-%d", num))
+		logrus.Fatal(fmt.Sprintf("Failed to create es output of consumer-%d", num))
 		return nil
 	}
 	worker.esOutput = output
@@ -62,7 +65,7 @@ func (worker *Worker) run() {
 	defer func() {
 		worker.esOutput.Stop()
 		worker.KafkaConsumer.Close()
-		logger.Println("Closing consumer " + fmt.Sprintf("%d", worker.No))
+		logrus.Info("Closing consumer " + fmt.Sprintf("%d", worker.No))
 	}()
 
 	// Create signal channel
@@ -77,11 +80,11 @@ func (worker *Worker) run() {
 			}
 		case ntf, more := <-worker.KafkaConsumer.Notifications():
 			if more {
-				logger.Printf("Rebalanced: %+v\n", ntf)
+				logrus.Info("Rebalanced: %+v\n", ntf)
 			}
 		case err, more := <-worker.KafkaConsumer.Errors():
 			if more {
-				logger.Printf("Error: %s\n", err.Error())
+				logrus.Info("Error: %s\n", err.Error())
 			}
 		case <-sigchan:
 			return
@@ -91,6 +94,8 @@ func (worker *Worker) run() {
 
 func main() {
 	flag.Parse()
+	logutil.Init(*loglevel)
+	logrus.Debug("dddddddddddddd-----------------ddddddddddddddd")
 
 	if *groupID == "" {
 		printUsageErrorAndExit("You have to provide a -group name.")
@@ -115,6 +120,9 @@ func main() {
 	default:
 		printUsageErrorAndExit("-offset should be `oldest` or `newest`")
 	}
+	config.Config.Consumer.Fetch.Max = 10485760
+	config.Config.ChannelBufferSize = 500
+	config.Config.ClientID = "incidents"
 
 	var wg sync.WaitGroup
 	for i := 1; i <= *workers; i++ {
@@ -129,7 +137,7 @@ func main() {
 		}(i)
 	}
 	wg.Wait()
-	logger.Println(">>>>>Exit<<<<<")
+	logrus.Info("Exit!")
 }
 
 func printUsageErrorAndExit(format string, values ...interface{}) {
