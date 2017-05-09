@@ -43,12 +43,12 @@ func NewWorker(num int, w *sync.WaitGroup, brokerList *string, groupID *string, 
 	worker := &Worker{No: num, wg: w}
 	consumer, err := cluster.NewConsumer(strings.Split(*brokerList, ","), *groupID, strings.Split(*topicList, ","), config)
 	if err != nil {
-		logrus.Fatal(fmt.Sprintf("Failed to start consumer-%d, %s", num, err.Error()))
+		logrus.Fatalf("Failed to start consumer-%d, %s", num, err.Error())
 		return nil
 	}
 	output := NewElasticsearchOutput(*flushSize, *flushIntervalSeconds, consumer, num, *esURL, *sniff)
 	if output == nil {
-		logrus.Fatal(fmt.Sprintf("Failed to create es output of consumer-%d", num))
+		logrus.Fatalf("Failed to create es output of consumer-%d", num)
 		return nil
 	}
 	worker.esOutput = output
@@ -65,7 +65,7 @@ func (worker *Worker) run() {
 	defer func() {
 		worker.esOutput.Stop()
 		worker.KafkaConsumer.Close()
-		logrus.Info("Closing consumer " + fmt.Sprintf("%d", worker.No))
+		logrus.Infof("Closing consumer-%d", worker.No)
 	}()
 
 	// Create signal channel
@@ -80,11 +80,11 @@ func (worker *Worker) run() {
 			}
 		case ntf, more := <-worker.KafkaConsumer.Notifications():
 			if more {
-				logrus.Info("Rebalanced: %+v\n", ntf)
+				logrus.Infof("Rebalanced: %+v\n", ntf)
 			}
 		case err, more := <-worker.KafkaConsumer.Errors():
 			if more {
-				logrus.Info("Error: %s\n", err.Error())
+				logrus.Infof("Error: %s\n", err.Error())
 			}
 		case <-sigchan:
 			return
@@ -95,7 +95,6 @@ func (worker *Worker) run() {
 func main() {
 	flag.Parse()
 	logutil.Init(*loglevel)
-	logrus.Debug("dddddddddddddd-----------------ddddddddddddddd")
 
 	if *groupID == "" {
 		printUsageErrorAndExit("You have to provide a -group name.")
