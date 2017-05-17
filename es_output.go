@@ -12,7 +12,7 @@ import (
 )
 
 // channelSize is the number of events Channel can buffer before blocking will occur.
-const channelSize = 1
+const channelSize = 100
 
 func init() {
 }
